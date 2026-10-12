@@ -123,14 +123,23 @@ setupDependencyUnits mode plan =
     ]
 
 -- | The packages that the packages buck2 builds from source need to be built
--- and linked, as the libraries and tools they depend on, and what those
--- need. The setup scripts that cabal runs to build other packages (and
--- what they need) are not among them, and having them would mean more than
--- one version of some packages.
+-- and linked: the libraries they depend on, and what those need. Not the
+-- build tools (@build-tool-depends:@, such as the preprocessors), which are
+-- programs that cabal built into its store and that buck2 runs from there,
+-- found through the plan (see
+-- 'Distribution.Client.Buck2.Prebuilt.generatePrebuilt'): nothing links
+-- against the libraries that a tool was built from. Having those would be
+-- harmful, too. A tool's package has to be built by cabal, but the same
+-- package can also be installed in GHC's own package database (as with a Nix
+-- @ghcWithPackages@) and be used from there as a library, and then there
+-- would be two prebuilt libraries with the one name. The setup scripts that
+-- cabal runs to build other packages (and what they need) are not among
+-- them either, and having them would mean more than one version of some
+-- packages.
 prebuiltUnits :: DependencyMode -> ElaboratedInstallPlan -> Set.Set UnitId
 prebuiltUnits mode plan = closure Set.empty (concatMap deps (builtLocalElabs mode plan))
   where
-    deps elab = [newSimpleUnitId (confInstId dep) | (dep, _) <- elabLibDependencies elab] ++ elabOrderExeDependencies elab
+    deps elab = [newSimpleUnitId (confInstId dep) | (dep, _) <- elabLibDependencies elab]
     closure seen [] = seen
     closure seen (uid : rest)
       | uid `Set.member` seen = closure seen rest
