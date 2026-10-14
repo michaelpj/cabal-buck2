@@ -1,6 +1,21 @@
-# 0.1.0.0
+# 0.3.0.0
 
   * For `cabal-install` version 3.18
+  * The generated `BUCK.cabal.bzl` files no longer contain the
+    directory of the package, or of the packages it depends on. The
+    packages are is now in `cabal-buck2/packages.bzl` in the root of
+    the project (which has an entry for each package that the project
+    builds), so a package's `BUCK.cabal.bzl` is the same wherever the
+    package is in the project, and whichever project it is part of.
+    All of the packages have to be in the root Buck2 cell.
+  * Support a GHC install whose package database isn't next to the
+    libraries of its packages, such as a Nix `ghcWithPackages`.
+
+# 0.2.0.1
+
+  * For `cabal-install` version 3.18
+  * Fix an issue with duplicate generated haskell_prebuilt_library()
+    targets due to dependencies of build tools.
 
 # 0.2.0.0
 
@@ -28,8 +43,6 @@
     * Fix name clash problem with prebuilt sublibraries
     * Fix broken `cabal buck2 -j`
 
-# 0.2.0.1
+# 0.1.0.0
 
   * For `cabal-install` version 3.18
-  * Fix an issue with duplicate generated haskell_prebuilt_library()
-    targets due to dependencies of build tools.

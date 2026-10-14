@@ -5,7 +5,8 @@ module Main (main) where
 
 import Control.Exception (SomeException, bracket, displayException, try)
 import Control.Monad (forM_, unless, when)
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, nub)
+import Data.Maybe (fromMaybe)
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.Map as Map
 import System.Directory
@@ -17,6 +18,7 @@ import System.Directory
   , findExecutable
   , getTemporaryDirectory
   , listDirectory
+  , makeAbsolute
   , removeDirectoryRecursive
   )
 import System.Environment (getEnvironment, lookupEnv)
@@ -27,11 +29,19 @@ import System.Process (CreateProcess (..), callProcess, getCurrentPid, proc, rea
 
 import Distribution.Client.Buck2.Cache (cacheBlock, spliceBlock)
 import Distribution.Client.Buck2.Fingerprint (ccFingerprintOf, fingerprintOf)
+import Distribution.Client.Buck2.Prebuilt (RepoPaths (..), externalDirs, toRepoRelative)
 import Distribution.Client.Buck2.Version (cabalBuck2Version)
 
 main :: IO ()
 main = do
-  exe <- maybe (fail "cabal-buck2 not found on PATH") return =<< findExecutable "cabal-buck2"
+  -- The executable to test: $CABAL_BUCK2_EXE if it's set (as when this is run by
+  -- buck2, which only puts a build-tool-depends executable on PATH for
+  -- building, not for running tests - see BUCK), otherwise the one on PATH (as
+  -- `cabal test` has it, from build-tool-depends).
+  fromEnv <- lookupEnv "CABAL_BUCK2_EXE"
+  exe <- case fromEnv of
+    Just path -> makeAbsolute path -- the tests run in other directories
+    Nothing -> maybe (fail "cabal-buck2 not found on PATH") return =<< findExecutable "cabal-buck2"
   results <- mapM (runTest exe) tests
   unitResults <- mapM runUnitTest unitTests
   let failures =
@@ -42,7 +52,7 @@ main = do
     exitFailure
 
 unitTests :: [(String, IO ())]
-unitTests = [("fingerprint", fingerprint), ("cc-fingerprint", ccFingerprint), ("splice-block", spliceBlockTest)]
+unitTests = [("fingerprint", fingerprint), ("cc-fingerprint", ccFingerprint), ("splice-block", spliceBlockTest), ("external-dirs", externalDirsTest)]
 
 runUnitTest :: (String, IO ()) -> IO Bool
 runUnitTest (name, test) = do
@@ -272,10 +282,17 @@ basic project = do
     exe ("'kind': '" ++ kind ++ "'") exeBzl
   exe "'name': 'exe-pkg-bench'" exeBzl
 
-  -- A dependency on another local package carries that package's directory
-  -- (from which the target label is made).
+  -- A dependency on another local package is just its name: where packages
+  -- are is in cabal-buck2/packages.bzl, written once for the project, so that
+  -- a package's own file doesn't change when the package moves.
   exe "'package': 'lib-pkg'" exeBzl
-  exe "'dir': 'lib-pkg'" exeBzl
+  assertNotContains "exe-pkg/BUCK.cabal.bzl" "'dir'" exeBzl
+  assertNotContains "lib-pkg/BUCK.cabal.bzl" "'dir'" libBzl
+  packages <- readIn project ("cabal-buck2" </> "packages.bzl")
+  let pk = assertContains "cabal-buck2/packages.bzl"
+  pk "PACKAGES = {" packages
+  pk "'exe-pkg': 'exe-pkg'," packages
+  pk "'lib-pkg': 'lib-pkg'," packages
 
   -- C sources and include directories are recorded as written in the .cabal
   -- file; cabal.bzl turns them into a cxx_library().
@@ -369,7 +386,11 @@ sourceDeps project = do
   depBzl <- readIn project depBzlPath
   assertContains depBzlPath "'name': 'dep'" depBzl
   assertContains depBzlPath "'version': '1.0'" depBzl
-  assertContains depBzlPath "'dir': 'dist-newstyle/src/dep-1.0'" depBzl
+  -- ... but not where it is (the 'dir' of its data files is something else).
+  assertContains depBzlPath "'version': '1.0',\n    }," depBzl
+  -- Where it is, is in packages.bzl, with the packages of the project.
+  packages <- readIn project ("cabal-buck2" </> "packages.bzl")
+  assertContains "cabal-buck2/packages.bzl" "'dep': 'dist-newstyle/src/dep-1.0'," packages
   -- Its data files are recorded, for the tools that read them.
   assertContains depBzlPath "'data/*.txt'" depBzl
   -- hsc2hs is told what it is compiling for.
@@ -381,7 +402,8 @@ sourceDeps project = do
   appBzl <- readIn project ("app" </> "BUCK.cabal.bzl")
   -- A literate happy grammar is a module source.
   assertContains "app/BUCK.cabal.bzl" "'Parser': 'Parser.ly'" appBzl
-  assertContains "app/BUCK.cabal.bzl" "'dir': 'dist-newstyle/src/dep-1.0'" appBzl
+  assertContains "app/BUCK.cabal.bzl" "'package': 'dep'," appBzl
+  assertNotContains "app/BUCK.cabal.bzl" "'dir'" appBzl
 
   -- Without the flag the dependency is the store's again.
   _ <- buck2 project []
@@ -401,7 +423,7 @@ reexports project = do
   reBzl <- readIn project ("re-lib" </> "BUCK.cabal.bzl")
   let re = assertContains "re-lib/BUCK.cabal.bzl"
   re "'reexports'" reBzl
-  re "'module': 'Orig.A',\n                    'original': 'Orig.A',\n                    'from': {\n                        'package': 'base-lib',\n                        'dir': 'base-lib'," reBzl
+  re "'module': 'Orig.A',\n                    'original': 'Orig.A',\n                    'from': {\n                        'package': 'base-lib',\n                    }," reBzl
   re "'module': 'New.B',\n                    'original': 'Orig.B'," reBzl
   re "'module': 'Sub.M',\n                    'original': 'Sub.M',\n                    'from': {\n                        'package': 're-lib',\n                        'library': 'sub'," reBzl
   -- One of its own modules has no library it comes from, and no module of its own.
@@ -544,3 +566,34 @@ missingModule project = do
   assertContains "broken-pkg/BUCK.cabal.bzl" "'name': 'standalone'" bzl
   assertNotContains "broken-pkg/BUCK.cabal.bzl" "'name': 'uses-lib'" bzl
   assertNotContains "broken-pkg/BUCK.cabal.bzl" "'kind': 'library'" bzl
+
+-- | Libraries outside GHC's libdir and the cabal store (as in a Nix
+-- @ghcWithPackages@) are reached through a symlink for each directory.
+externalDirsTest :: IO ()
+externalDirsTest = do
+  let paths = RepoPaths{rpGhcVersion = "9.6.7", rpGlobalRootAbs = "/ghc/lib", rpStoreRootAbs = "/home/u/.cabal/store/ghc-9.6.7", rpStoreDbRel = "package.db", rpExternal = []}
+      aeson = "/nix/store/aaa-aeson-lib-aeson-2.2.5.1/lib/x86_64-linux-ghc-9.6.7"
+      text = "/nix/store/bbb-text-lib-text-2.1.4/lib/x86_64-linux-ghc-9.6.7"
+      dirs =
+        [ aeson ++ "/aeson-2.2.5.1-X" -- the static libraries, inside the shared libraries' directory
+        , aeson
+        , text ++ "/text-2.1.4-Y"
+        , text
+        , "/ghc/lib/x86_64-linux-ghc-9.6.7/base-4.18.3.0" -- under GHC's libdir
+        , "/home/u/.cabal/store/ghc-9.6.7/foo-1/lib" -- in the cabal store
+        ]
+      linked = externalDirs paths dirs
+      check what expected actual =
+        unless (expected == actual) $
+          failure (what ++ ": expected " ++ show expected ++ ", got " ++ show actual)
+  check "one link for each package, for neither GHC's libdir nor the store" [aeson, text] (map fst linked)
+  check "links are the same on every run" linked (externalDirs paths (reverse dirs ++ dirs))
+  let names = map snd linked
+  check "links are in external/" True (all (\n -> take 9 n == "external/") names)
+  check "the links are different" 2 (length (nub names))
+  let paths' = paths{rpExternal = linked}
+      aesonLink = fromMaybe (error "no link for aeson") (lookup aeson linked)
+  check "a library in a linked directory" (Just (aesonLink ++ "/aeson-2.2.5.1-X/libHSaeson-2.2.5.1-X.a")) (toRepoRelative paths' (aeson ++ "/aeson-2.2.5.1-X/libHSaeson-2.2.5.1-X.a"))
+  check "a library under GHC's libdir" (Just "ghc-9.6.7/x86_64-linux-ghc-9.6.7/base-4.18.3.0/libHSbase.a") (toRepoRelative paths' "/ghc/lib/x86_64-linux-ghc-9.6.7/base-4.18.3.0/libHSbase.a")
+  check "a library in the store" (Just "cabal-store/foo-1/lib/libHSfoo.a") (toRepoRelative paths' "/home/u/.cabal/store/ghc-9.6.7/foo-1/lib/libHSfoo.a")
+  check "something that isn't linked" Nothing (toRepoRelative paths' "/usr/include/stdio.h")

@@ -21,8 +21,6 @@ import Prelude ()
 data BuildSpec = BuildSpec
   { specPackageName :: String
   , specPackageVersion :: String
-  , specPackageDir :: FilePath
-  -- ^ Relative to the buck2 cell root, @.@ at the root.
   , specGhcOptions :: [String]
   -- ^ Supplied by the project, not the @.cabal@ file.
   , specDataDir :: FilePath
@@ -97,10 +95,10 @@ data SpecDep = SpecDep
   { depPackage :: String
   , depLibrary :: Maybe String
   -- ^ The sub-library, if the main library isn't the one depended on.
-  , depDir :: Maybe FilePath
-  -- ^ The package's directory (relative to the cell root) if it's built by
-  -- this project.
   }
+  -- A dependency doesn't say whether the package is built by this project or
+  -- is a prebuilt one: that is whether it has an entry in @packages.bzl@ (see
+  -- "Distribution.Client.Buck2.Packages").
 
 -- | A module that a library re-exports (@reexported-modules@) from a library
 -- it depends on.
@@ -114,7 +112,7 @@ data SpecReexport = SpecReexport
 
 -- | An executable that a component's @build-tool-depends@ needs on @PATH@.
 data SpecBuildTool
-  = -- | Built by this project, in the given directory.
-    LocalTool {toolExe :: String, toolDir :: FilePath}
+  = -- | Built by this project, as the given target of the given package.
+    LocalTool {toolExe :: String, toolPackage :: String}
   | -- | An already-installed binary, exported from @third-party\/haskell@.
     ExternalTool {toolExe :: String}

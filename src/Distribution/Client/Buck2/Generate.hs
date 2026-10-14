@@ -125,8 +125,7 @@ import Distribution.Client.Buck2.Spec
 type LocalPackageIndex = Map PackageName LocalPackage
 
 data LocalPackage = LocalPackage
-  { lpDir :: FilePath
-  , lpDescription :: PackageDescription
+  { lpDescription :: PackageDescription
   }
 
 -- | A generated file that lives in the package's @cabal-buck2\/autogen@
@@ -186,9 +185,6 @@ generatePackageTargets
   :: LocalPackageIndex
   -> FilePath
   -- ^ The project root.
-  -> FilePath
-  -- ^ The package's own buck2 cell-relative directory (@.@ at the project
-  -- root).
   -> Map (PackageName, ComponentName) LocalBuildInfo
   -> Set String
   -- ^ Every @build-tool-depends:@ executable name
@@ -207,7 +203,7 @@ generatePackageTargets
   -- needs (its tests, say), which are skipped without a warning.
   -> PackageDescription
   -> (PackageTargets, [String])
-generatePackageTargets localIndex projectRoot rootRelPkgDir componentLBIs externalBuildTools projectTestOptions sources skippedLibs inProject pkgDesc =
+generatePackageTargets localIndex projectRoot componentLBIs externalBuildTools projectTestOptions sources skippedLibs inProject pkgDesc =
   (targets, concatMap ctWarnings results)
   where
     generate = generateComponent localIndex projectRoot componentLBIs externalBuildTools projectTestOptions sources skippedLibs inProject pkgDesc
@@ -223,7 +219,7 @@ generatePackageTargets localIndex projectRoot rootRelPkgDir componentLBIs extern
     components = concatMap ctSpec results
     targets =
       PackageTargets
-        { ptSpec = packageSpec pkgDesc rootRelPkgDir (packageGhcOptions pkgDesc componentLBIs) components
+        { ptSpec = packageSpec pkgDesc (packageGhcOptions pkgDesc componentLBIs) components
         , ptComponentCount = length components
         , ptAutogenFiles = dedupAutogenFiles (concatMap ctAutogen results)
         , ptNotes = concatMap ctNotes results
@@ -319,7 +315,7 @@ generateComponent localIndex projectRoot componentLBIs externalBuildTools projec
       Just (lbi, clbi) -> case resolveModules sources pkgDesc (Just (lbi, clbi)) bi (exposedModules lib ++ otherModules bi) of
         Left problems -> skipBecause problems ("library " ++ targetName ++ " (couldn't resolve all its modules)")
         Right (srcs, srcAutogen) ->
-          let reexports = [SpecReexport (prettyShow (moduleReexportName r)) (prettyShow original) (specDep localIndex <$> from) | (r, Just (from, original)) <- reexportOrigins localIndex pkgDesc lbi clbi lib]
+          let reexports = [SpecReexport (prettyShow (moduleReexportName r)) (prettyShow original) (specDep <$> from) | (r, Just (from, original)) <- reexportOrigins localIndex pkgDesc lbi clbi lib]
               -- A library with no modules (a compatibility package, say) has
               -- nothing to build, which a rule can't have.
               extra :: [(ModuleName.ModuleName, AutogenFile)]
@@ -462,12 +458,11 @@ generatedIncludeDirs projectRoot pkgDesc lbi bi
   | otherwise = []
 
 -- | A package's build spec.
-packageSpec :: PackageDescription -> FilePath -> [String] -> [SpecComponent] -> BuildSpec
-packageSpec pkgDesc rootRelPkgDir projectGhcOptions components =
+packageSpec :: PackageDescription -> [String] -> [SpecComponent] -> BuildSpec
+packageSpec pkgDesc projectGhcOptions components =
   BuildSpec
     { specPackageName = unPackageName (packageName pkgDesc)
     , specPackageVersion = prettyShow (packageVersion pkgDesc)
-    , specPackageDir = rootRelPkgDir
     , specGhcOptions = projectGhcOptions
     , specDataDir = getSymbolicPath (dataDir pkgDesc)
     , specDataFiles = map getSymbolicPath (dataFiles pkgDesc)
@@ -491,7 +486,7 @@ specComponent localIndex externalBuildTools kind name bi =
       scLanguage = Just (prettyShow (fromMaybe Haskell98 (defaultLanguage bi)))
     , scExtensions = map prettyShow (usedExtensions bi)
     , scExtraLibraries = extraLibs bi
-    , scDeps = map (specDep localIndex) (libraryDeps bi)
+    , scDeps = map specDep (libraryDeps bi)
     , scReexports = []
     , scBuildTools = mapMaybe buildToolSpec (ordNub [(pn, exe) | ExeDependency pn exe _ <- buildToolDepends bi])
     , scCSources = map getSymbolicPath (cSources bi)
@@ -511,7 +506,7 @@ specComponent localIndex externalBuildTools kind name bi =
     -- external binary can't be put on PATH by buck2: dropped, silently -
     -- most build-tool-depends are Setup.hs-time tools nothing needs on PATH.
     buildToolSpec (pn, exe) = case Map.lookup pn localIndex of
-      Just lp -> Just (LocalTool (nonLibraryTargetName "-exe" (lpDescription lp) exe) (lpDir lp))
+      Just lp -> Just (LocalTool (nonLibraryTargetName "-exe" (lpDescription lp) exe) (unPackageName pn))
       Nothing
         | n `Set.member` externalBuildTools -> Just (ExternalTool n)
         | otherwise -> Nothing
@@ -593,14 +588,13 @@ libraryDeps bi =
     ]
 
 -- | The library, or the package's main one, that a dependency names.
-specDep :: LocalPackageIndex -> (PackageName, LibraryName) -> SpecDep
-specDep localIndex (pn, ln) =
+specDep :: (PackageName, LibraryName) -> SpecDep
+specDep (pn, ln) =
   SpecDep
     { depPackage = unPackageName pn
     , depLibrary = case ln of
         LSubLibName n -> Just (unUnqualComponentName n)
         LMainLibName -> Nothing
-    , depDir = lpDir <$> Map.lookup pn localIndex
     }
 
 -- | Where a library's @reexported-modules@ come from, as Cabal resolves them: the

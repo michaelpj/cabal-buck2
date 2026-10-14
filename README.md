@@ -117,6 +117,13 @@ does the following:
      files that Cabal autogenerates, such as `cabal_macros.h` and
      `Paths_<pkg>.hs`.
 
+   * `cabal-buck2/packages.bzl` in the root of the project, which says
+     where each of your packages is. Nothing in a package's
+     `BUCK.cabal.bzl` says where it is or where the packages it depends
+     on are, so moving a package, or building it as part of a bigger
+     project, only changes this file. (All the packages have to be in
+     the one Buck2 cell, the root.)
+
    * `third-party/haskell`: tells Buck2 about all the prebuilt package
      dependencies, either in the Cabal store or in GHC's package
      DB (unless you build the dependencies from source, see below). In here we also record the GHC version you're using, and the

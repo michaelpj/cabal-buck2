@@ -1,0 +1,121 @@
+name: buck2
+
+# An end-to-end test: builds cabal-buck2 with cabal, uses it to generate a buck2
+# build of this very project (`cabal buck2`), then builds and tests the project
+# with buck2. The buck2 side (buck2/) is the haskell-buck2 submodule, which has
+# to be at the commit for this release of cabal-buck2: cabal-buck2 checks that
+# buck2/version.bzl says the release it is.
+
+# See: https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions#concurrency.
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  - push
+  - pull_request
+  - workflow_dispatch
+
+env:
+  GHC_VERSION: 9.6.7
+  # A dated release of https://github.com/facebook/buck2/releases
+  # This is chosen to be compatible with the prelude in the buck2
+  # submodule; earlier or later versions are not guaranteed to work.
+  BUCK2_VERSION: "2026-10-01"
+
+jobs:
+  buck2:
+    name: cabal buck2${{ matrix.args }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The dependencies are built by cabal, into its store.
+          - mode: store
+            args: ""
+          # The dependencies are built from source by buck2 as well, so that
+          # the cabal store isn't used for them at all. This builds a lot
+          # more with buck2 (cabal-install and everything it depends on).
+          - mode: source-deps
+            args: " --source-deps"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The buck2 prelude and support code (buck2/).
+          submodules: true
+
+      - name: Install GHC and cabal
+        uses: haskell-actions/setup@v2
+        with:
+          ghc-version: ${{ env.GHC_VERSION }}
+          cabal-version: latest
+
+      - name: Install buck2
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "https://github.com/facebook/buck2/releases/download/${BUCK2_VERSION}/buck2-x86_64-unknown-linux-gnu.zst" \
+            | zstd -d > "$HOME/.local/bin/buck2"
+          chmod +x "$HOME/.local/bin/buck2"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Tool versions
+        run: |
+          ghc --version
+          cabal --version
+          buck2 --version
+          # The buck2 toolchain looks the compiler up by versioned name.
+          ghc-${GHC_VERSION} --version
+          ghc-pkg-${GHC_VERSION} --version
+
+      - name: Update Hackage index
+        run: cabal v2-update
+
+      - name: Generate build plan for correct cache key
+        run: cabal build all --dry-run
+
+      - name: Get runner OS/version for cache keys
+        id: get-osver
+        run: echo "osver=$ImageOS" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cached dependencies
+        uses: actions/cache/restore@v6
+        id: cache
+        with:
+          path: ~/.local/state/cabal
+          key: ${{ steps.get-osver.outputs.osver }}-store-buck2-${{ matrix.mode }}-${{ hashFiles('dist-newstyle/cache/plan.json') }}
+          restore-keys: ${{ steps.get-osver.outputs.osver }}-store-buck2-${{ matrix.mode }}-
+
+      - name: Build cabal-buck2
+        run: cabal build exe:cabal-buck2
+
+      # Dependencies are built by cabal as part of `cabal buck2` (as a plain
+      # `cabal build --only-dependencies` would); everything in this project
+      # is built by buck2. Run a copy of the binary so that the build
+      # directory it operates on isn't the one it lives in.
+      #
+      # This creates .buckconfig and PACKAGE (copied from buck2/example), as
+      # well as third-party/haskell and BUCK.cabal.bzl. BUCK is the one file
+      # of the setup that is committed: it is hand-maintained, see there.
+      - name: Generate buck2 build (cabal-buck2 --enable-tests${{ matrix.args }})
+        run: |
+          cp "$(cabal list-bin exe:cabal-buck2)" "$RUNNER_TEMP/cabal-buck2"
+          "$RUNNER_TEMP/cabal-buck2" --enable-tests${{ matrix.args }}
+
+      - name: Cache dependencies
+        uses: actions/cache/save@v6
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.local/state/cabal
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      - name: buck2 build
+        run: buck2 build //...
+
+      # The test-suite runs the cabal-buck2 that buck2 just built (BUCK says
+      # where it is) on the projects in test/fixtures.
+      - name: buck2 test
+        run: buck2 test //...

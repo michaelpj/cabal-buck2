@@ -23,7 +23,6 @@ import Distribution.Client.Types (PackageLocation (..))
 
 import Distribution.Package (PackageId, packageId, packageName)
 import Distribution.Simple.Utils (createDirectoryIfMissingVerbose, die', info, writeFileAtomic)
-import Distribution.Verbosity (Verbosity)
 
 import qualified Data.ByteString.Lazy as LBS
 

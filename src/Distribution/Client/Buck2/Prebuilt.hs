@@ -21,12 +21,16 @@
 --    depend on.
 module Distribution.Client.Buck2.Prebuilt
   ( generatePrebuilt
+  , RepoPaths (..)
+  , externalDirs
+  , toRepoRelative
   ) where
 
 import Distribution.Client.Compat.Prelude
 import Prelude ()
 
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BS8
 import Data.Char (isHexDigit)
 import Data.List (stripPrefix)
 import qualified Data.Map as Map
@@ -45,10 +49,12 @@ import System.FilePath
   , isPathSeparator
   , joinPath
   , makeRelative
+  , normalise
   , pathSeparator
   , splitDirectories
   , splitPath
   , takeDirectory
+  , takeFileName
   , (<.>)
   , (</>)
   )
@@ -80,6 +86,7 @@ import Distribution.Simple.Program.Builtin (ghcProgram)
 import Distribution.Simple.Program.Db (lookupProgram)
 import Distribution.Simple.Program.Types (programPath)
 import Distribution.Simple.Utils (die', notice, ordNub, warn)
+import Distribution.Utils.MD5 (md5, showMD5)
 import Distribution.Types.InstalledPackageInfo
   ( InstalledPackageInfo
       ( depends
@@ -98,6 +105,7 @@ import Distribution.Types.UnqualComponentName (UnqualComponentName, unUnqualComp
 
 import Distribution.Client.Buck2.Fingerprint (ccFingerprint, ghcFingerprint)
 import Distribution.Client.Buck2.LocalPackages (ToolTarget (..), planElab)
+import Distribution.Client.Buck2.Version (cabalBuck2Version)
 import Distribution.Client.Buck2.Starlark
 
 -- | Generate\/refresh @third-party\/haskell@ from the dependency closure
@@ -172,6 +180,7 @@ generatePrebuilt verbosity projectRoot cabalDirLayout shared depsPlan neededUnit
           , rpGlobalRootAbs = globalRootAbs
           , rpStoreRootAbs = storeRootAbs
           , rpStoreDbRel = makeRelative storeRootAbs storeDB
+          , rpExternal = []
           }
 
   createDirectoryIfMissing True targetDir
@@ -211,8 +220,29 @@ generatePrebuilt verbosity projectRoot cabalDirLayout shared depsPlan neededUnit
   -- An earlier version generated a filtered copy of the store's package db here.
   removeStaleStoreDB (targetDir </> "store-db")
 
+  -- Where GHC's package db isn't next to its libraries (a Nix @ghcWithPackages@,
+  -- say, in which every package is in a store path of its own), they are
+  -- reached through a symlink for each directory.
+  let external = externalDirs paths (map (takeDirectory . snd) (concatMap libraryFiles packages))
+      paths' = paths{rpExternal = external}
+  removeStaleExternal (targetDir </> externalDirName)
+  unless (null external) $ do
+    notice verbosity $ "cabal buck2: linking " ++ show (length external) ++ " library director" ++ (if length external == 1 then "y" else "ies") ++ " outside GHC's libdir and the cabal store"
+    createDirectoryIfMissing True (targetDir </> externalDirName)
+    for_ external $ \(dir, link) -> ensureSymlink (targetDir </> link) dir
+  for_ packages $ \p ->
+    when (not (null (hsLibraries (rpInfo p))) && null (libraryFiles p)) $
+      warn verbosity $
+        "cabal buck2: found no library files for "
+          ++ unUnitId (rpUnitId p)
+          ++ " (hs-libraries: "
+          ++ unwords (hsLibraries (rpInfo p))
+          ++ ", in "
+          ++ unwords (libraryDirs (rpInfo p) ++ libraryDynDirs (rpInfo p))
+          ++ "): linking against it will fail"
+
   notice verbosity "cabal buck2: generating third-party/haskell/BUCK"
-  writeBuckFile targetDir paths packages buildToolPaths localTools
+  writeBuckFile targetDir paths' packages buildToolPaths localTools
 
   fingerprint <- ghcFingerprint compiler globalDB
   ccPrint <- ccFingerprint compiler
@@ -230,6 +260,10 @@ data RepoPaths = RepoPaths
   , rpStoreRootAbs :: FilePath
   , rpStoreDbRel :: FilePath
   -- ^ The store's package db, relative to 'rpStoreRootAbs'.
+  , rpExternal :: [(FilePath, FilePath)]
+  -- ^ Directories that are neither under GHC's libdir nor the cabal store,
+  -- and the symlinks (relative to @third-party\/haskell@) to them, which
+  -- they are reached through. See 'externalDirs'.
   }
 
 -- | Which of the two package dbs a unit id's @.conf@ lives in - decided
@@ -260,9 +294,17 @@ data ResolvedPackage = ResolvedPackage
   , rpUnitId :: UnitId
   , rpDbKind :: PkgDbKind
   , rpStaticLibs :: [FilePath]
+  -- ^ Absolute paths, like 'rpProfiledLibs' and 'rpSharedLibs'.
   , rpProfiledLibs :: [FilePath]
   , rpSharedLibs :: [(String, FilePath)]
   }
+
+-- | Every library file found for the package, and what to call it.
+libraryFiles :: ResolvedPackage -> [(String, FilePath)]
+libraryFiles p =
+  [("static", f) | f <- rpStaticLibs p]
+    ++ [("profiled", f) | f <- rpProfiledLibs p]
+    ++ [("shared", f) | (_, f) <- rpSharedLibs p]
 
 confPath :: FilePath -> FilePath -> UnitId -> FilePath
 confPath globalRootAbs storeDB uid = case classifyUnitId uid of
@@ -315,15 +357,18 @@ readPackage verbosity paths storeDB uid = do
 findLibs :: RepoPaths -> [FilePath] -> [String] -> IO [FilePath]
 findLibs paths dirs fnames = catMaybes <$> traverse (findOne paths dirs) fnames
 
+-- | The absolute path of the file; it is made relative to @third-party\/haskell@
+-- by 'toRepoRelative' when it is written, as the directories it is in
+-- may need a symlink first (see 'externalDirs').
 findOne :: RepoPaths -> [FilePath] -> String -> IO (Maybe FilePath)
-findOne paths dirs fname = go dirs
+findOne _paths dirs fname = go dirs
   where
     go [] = return Nothing
     go (d : ds) = do
       let absPath = d </> fname
       exists <- doesFileExist absPath
       if exists
-        then return (toRepoRelative paths absPath)
+        then return (Just absPath)
         else go ds
 
 findSharedLibs :: RepoPaths -> InstalledPackageInfo -> IO [(String, FilePath)]
@@ -445,11 +490,11 @@ prebuiltCall paths uidToTarget p =
       , ("version", str (prettyShow (packageVersion (rpInfo p))))
       , ("id", str (unUnitId (rpUnitId p)))
       , ("db", str (if rpDbKind p == GlobalDb then globalDbRel else "cabal-store" </> rpStoreDbRel paths))
-      , ("static_libs", strList (rpStaticLibs p))
+      , ("static_libs", strList (rel (rpStaticLibs p)))
       ]
-        ++ [("profiled_static_libs", strList (rpProfiledLibs p)) | not (null (rpProfiledLibs p))]
-        ++ [("pic_profiled_static_libs", strList (rpProfiledLibs p)) | not (null (rpProfiledLibs p))]
-        ++ [("shared_libs", VDict [(soname, str sopath) | (soname, sopath) <- rpSharedLibs p])]
+        ++ [("profiled_static_libs", strList profiled) | not (null profiled)]
+        ++ [("pic_profiled_static_libs", strList profiled) | not (null profiled)]
+        ++ [("shared_libs", VDict [(soname, str sopath) | (soname, abs') <- rpSharedLibs p, Just sopath <- [toRepoRelative paths abs']])]
         ++ [("cxx_header_dirs", strList headerDirs) | not (null headerDirs)]
         ++ [("exported_linker_flags", strList extraLinkerFlags) | not (null extraLinkerFlags)]
         ++ [("deps", strList depTargets) | not (null depTargets)]
@@ -457,14 +502,16 @@ prebuiltCall paths uidToTarget p =
     )
   where
     info = rpInfo p
+    rel = mapMaybe (toRepoRelative paths)
+    profiled = rel (rpProfiledLibs p)
     globalDbRel = ("ghc-" ++ rpGhcVersion paths) </> "package.conf.d"
     headerDirs = mapMaybe (toRepoRelative paths) (includeDirs info)
     extraLinkerFlags = ["-l" ++ lib | lib <- extraLibraries info]
     depTargets = ordNub [":" ++ t | d <- depends info, Just t <- [Map.lookup d uidToTarget]]
 
--- | Convert an absolute path under GHC's libdir or the cabal store into
--- one relative to @third-party\/haskell@, via whichever symlink
--- 'generatePrebuilt' pointed there actually contains it - the same
+-- | Convert an absolute path under GHC's libdir, the cabal store or one of the
+-- 'externalDirs' into one relative to @third-party\/haskell@, via whichever
+-- symlink 'generatePrebuilt' pointed there actually contains it - the same
 -- translation gen-haskell-prebuilt.py's own @abs_to_rel@ did.
 toRepoRelative :: RepoPaths -> FilePath -> Maybe FilePath
 toRepoRelative paths path
@@ -472,6 +519,45 @@ toRepoRelative paths path
   | otherwise =
       relTo (rpGlobalRootAbs paths) ("ghc-" ++ rpGhcVersion paths) path
         <|> relTo (rpStoreRootAbs paths) "cabal-store" path
+        <|> listToMaybe (mapMaybe (\(dir, link) -> relTo dir link path) (rpExternal paths))
+
+-- | The directory of the symlinks to the 'externalDirs'.
+externalDirName :: FilePath
+externalDirName = "external"
+
+-- | The directories with the library files of packages that are
+-- neither under GHC's libdir nor in the cabal store, which buck2 can only get at
+-- through a symlink in the project, with the name (relative to
+-- @third-party\/haskell@) of the symlink to each. The headers of a package are
+-- found through those too, when they are in them (as they are for a Nix
+-- package); a directory of headers on its own, like @\/usr\/include@, gets
+-- no symlink: it would be the system's headers in the project.
+--
+-- GHC's package db isn't always next to the libraries of its packages. In a
+-- Nix @ghcWithPackages@, say, the library files of each package are in a store
+-- path of their own (@\/nix\/store\/<hash>-aeson-...\/lib\/...@). A path in a
+-- rule has to be relative and inside the project, so it can't be given as
+-- it is.
+--
+-- A symlinked directory is part of the project as far as buck2's file watcher
+-- is concerned, so no more is linked than needed. That is each directory with
+-- library files, except one that is inside another such directory (the
+-- directory of the static libraries of a package, which is in the
+-- directory with its shared libraries, say). The symlink is named after the
+-- directory and a hash of its path, which makes the name the same every time.
+externalDirs :: RepoPaths -> [FilePath] -> [(FilePath, FilePath)]
+externalDirs paths dirs = [(dir, externalDirName </> linkName dir) | dir <- sort maximal]
+  where
+    outside = ordNub [d | d <- map normalise dirs, isAbsolute d, isNothing (relTo (rpGlobalRootAbs paths) "" d <|> relTo (rpStoreRootAbs paths) "" d)]
+    maximal = [d | d <- outside, not (any (`isProperAncestor` d) outside)]
+    isProperAncestor a d = a /= d && makeRelative a d /= d
+    linkName dir = takeFileName dir ++ "-" ++ take 12 (showMD5 (md5 (BS8.pack dir)))
+
+-- | Remove the symlinks that an earlier run made.
+removeStaleExternal :: FilePath -> IO ()
+removeStaleExternal dir = do
+  exists <- doesPathExist dir
+  when exists $ removeDirectoryRecursive dir
 
 relTo :: FilePath -> FilePath -> FilePath -> Maybe FilePath
 relTo root repoRelPrefix path =
@@ -545,6 +631,10 @@ writeToolsFile targetDir ghcVersionStr fingerprint ccPrint ghcDynamic toolTarget
       [ "# @generated by `cabal buck2` - do not edit by hand."
       , "# Re-run `cabal buck2` to update."
       , ""
+      , -- Checked by buck2/cabal.bzl before it loads anything else from
+        -- here, so that tools.bzl written by another release of cabal-buck2
+        -- is reported as that, not as a missing symbol.
+        "CABAL_BUCK2_VERSION = " ++ show cabalBuck2Version
       , "GHC_VERSION = " ++ show ghcVersionStr
       , "GHC_FINGERPRINT = " ++ show fingerprint
       , "CC_FINGERPRINT = " ++ show ccPrint
