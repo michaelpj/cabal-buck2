@@ -1,6 +1,10 @@
 # 0.5.0.0
 
   * For `cabal-install` version 3.18
+  * `--per-module` (experimental) compiles each module in a buck2 action of its own
+    rather than each component with one `ghc --make`, with early
+    cut-off by ABI hash within and across packages. See the README for
+    what it costs.
 
 # 0.4.0.0
 
