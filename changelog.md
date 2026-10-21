@@ -9,6 +9,10 @@
   * The path to GHC, its tools and the C/C++ compilers are now fixed
     when you run `cabal buck2` rather than being found via `PATH`
     (see https://github.com/simonmar/haskell-buck2/issues/29)
+  * `--per-module` (experimental) compiles each module in a buck2 action of its own
+    rather than each component with one `ghc --make`, with early
+    cut-off by ABI hash within and across packages. See the README for
+    what it costs.
 
 # 0.5.0.0
 
