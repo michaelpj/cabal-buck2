@@ -329,6 +329,12 @@ jobs:
           grep -q '__th__/db-shared' inputs.txt
           if grep -q 'db-early-shared' inputs.txt; then exit 1; fi
 
+      # th_build_depends: the dependencies compiled per module that a
+      # target's splices run code from.
+      - name: th_build_depends, per module
+        working-directory: example
+        run: ../.github/scripts/th-build-depends.sh
+
       # The same through the persistent worker of the buck2 rules
       # (buck2/tools/ghc-worker), which compiles a target's modules in one
       # GHC session: the actions then run in a worker rather than as
@@ -363,6 +369,10 @@ jobs:
           # The worker writes the dep files the script wrote.
           buck2 audit dep-files root//:example-test-bin haskell_compile_module_shared Main | tee inputs.txt
           grep -q 'Example/Lib.abi' inputs.txt
+
+      - name: th_build_depends, per module with the worker
+        working-directory: example
+        run: ../.github/scripts/th-build-depends.sh
 
       # The worker as a package of the project (cabal.project.worker), which
       # buck2 then builds with the project's GHC and the per-module targets
