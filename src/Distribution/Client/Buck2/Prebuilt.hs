@@ -679,6 +679,10 @@ writeToolsFile targetDir ghcVersionStr fingerprint ccPrint ghcDynamic toolPaths 
       , "CC_FINGERPRINT = " ++ show ccPrint
       , "GHC_BIN_DIR = \"third-party/haskell/ghc-bin\""
       , "GHC_DYNAMIC = " ++ (if ghcDynamic then "True" else "False")
+      , -- The persistent worker of the per-module compiles
+        -- (buck2/tools/ghc-worker), when the project builds it: what
+        -- `[haskell] per_module_worker = local` uses.
+        "GHC_WORKER_TARGET = " ++ starlarkMaybe (toolLabel <$> Map.lookup "ghc-worker" toolTargets)
       , ""
       , "# The tools the toolchains run, by their symlinks under toolchain/ (or,"
       , "# for one that `cabal buck2` didn't find, its name on the PATH)."
