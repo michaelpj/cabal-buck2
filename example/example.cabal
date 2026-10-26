@@ -31,6 +31,12 @@ library
   cxx-options: -std=c++17
   extra-libraries: stdc++
   default-language: Haskell2010
+  -- Explicit level imports, which the per-module build reads to choose a
+  -- Template Haskell module's package dbs.
+  if impl(ghc >= 9.14)
+    exposed-modules:
+        Example.Eli
+        Example.EliNone
 
 test-suite example-test
   type: exitcode-stdio-1.0
