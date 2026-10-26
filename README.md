@@ -285,6 +285,16 @@ be made per component, in the project's `cabal-buck2.bzl`
 (`"per_module": True` in a component's overrides, see
 [Customising the build](#customising-the-build)).
 
+The per-process cost goes away with the persistent worker that comes with
+the Buck2 rules (`buck2/tools/ghc-worker`): buck2 sends the compiles of a
+component to one process, which compiles them concurrently in a single GHC
+session. It is used when `per_module_worker` under `[haskell]` in the
+project's `.buckconfig.local` says so: `local` for the project's own, when
+it is a package of the project (`packages: buck2/tools/ghc-worker` in
+`cabal.project`), which buck2 builds with the project's GHC; or the path
+(or name on `$PATH`) of one installed with the project's GHC (see its
+README). Unset, or `none`, there is no worker.
+
 # Sharing build results (a build cache)
 
 By default buck2 keeps nothing between runs of its daemon, nor between
