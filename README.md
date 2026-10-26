@@ -265,7 +265,11 @@ interfaces changed (by ABI hash) are recompiled, within a package and across
 packages, with the policy `ghc --make` itself has. A comment-only or
 implementation-only edit to a module recompiles that module and nothing
 else (and, as with `--make`, the modules whose Template Haskell splices
-loaded its object).
+loaded its object). A module that runs no Template Haskell compiles
+against the interfaces it imports from a dependency as soon as they exist,
+before the dependency is linked; a Template Haskell module waits for the
+dependency's library, so a package that enables `TemplateHaskell` for all
+its modules waits whole.
 
 Each one-shot compile starts a GHC and loads the interfaces of its imports
 (and, for Template Haskell, the shared libraries of the component's

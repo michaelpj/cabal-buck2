@@ -24,6 +24,9 @@ on:
 
 env:
   GHC_VERSION: 9.6.7
+  # So that `buck2 audit dep-files` can list an action's inputs (the
+  # per-module early-cut-off check below).
+  BUCK2_KEEP_DEP_FILE_DIRECTORIES: "true"
   # A dated release of https://github.com/facebook/buck2/releases
   # This is chosen to be compatible with the prelude in the buck2
   # submodule; earlier or later versions are not guaranteed to work.
@@ -298,3 +301,23 @@ jobs:
           buck2 build //...
           buck2 log what-ran | tee what-ran.txt
           test "$(grep -c 'haskell_compile_module.*[[:space:]]local' what-ran.txt)" = 1
+          # Which inputs each kind of module has (the ones its dep file
+          # recorded). Main runs no Template Haskell: it compiles against the
+          # early package dbs of the libraries, two levels down (th through
+          # example), and the ABI files of the modules it imports, not
+          # against any linked shared object or interface directory.
+          # Example.Lib runs a splice, so it needs th's final db (and
+          # library, which GHC's usages don't record); Example.Forest has an
+          # ANN pragma, which GHC evaluates the same way.
+          inputs() { buck2 audit dep-files "$@" | tee inputs.txt; }
+          inputs root//:example-test-bin haskell_compile_module_shared Main
+          grep -q '__example__/db-early-shared' inputs.txt
+          grep -q '__th__/db-early-shared' inputs.txt
+          grep -q 'Example/Lib.abi' inputs.txt
+          if grep -q 'lib-shared' inputs.txt; then exit 1; fi
+          if grep -q 'hi-shared' inputs.txt; then exit 1; fi
+          inputs root//:example haskell_compile_module_shared Example.Lib
+          grep -q '__th__/db-shared' inputs.txt
+          inputs root//:example haskell_compile_module_shared Example.Forest
+          grep -q '__th__/db-shared' inputs.txt
+          if grep -q 'db-early-shared' inputs.txt; then exit 1; fi
