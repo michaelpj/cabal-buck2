@@ -169,6 +169,11 @@ jobs:
           # The example on a recent GHC too.
           - os: ubuntu-latest
             ghc: 9.12.4
+          # And on one with explicit level imports, which the example then
+          # uses (see example.cabal).
+          - os: ubuntu-latest
+            ghc: 9.14.1
+            explicit-level-imports: true
     env:
       GHC_VERSION: ${{ matrix.ghc }}
     defaults:
@@ -335,6 +340,11 @@ jobs:
         working-directory: example
         run: ../.github/scripts/th-build-depends.sh
 
+      - name: Explicit level imports, per module
+        if: matrix.explicit-level-imports
+        working-directory: example
+        run: ../.github/scripts/explicit-level-imports.sh
+
       # The same through the persistent worker of the buck2 rules
       # (buck2/tools/ghc-worker), which compiles a target's modules in one
       # GHC session: the actions then run in a worker rather than as
@@ -373,6 +383,11 @@ jobs:
       - name: th_build_depends, per module with the worker
         working-directory: example
         run: ../.github/scripts/th-build-depends.sh
+
+      - name: Explicit level imports, per module with the worker
+        if: matrix.explicit-level-imports
+        working-directory: example
+        run: ../.github/scripts/explicit-level-imports.sh
 
       # The worker as a package of the project (cabal.project.worker), which
       # buck2 then builds with the project's GHC and the per-module targets
