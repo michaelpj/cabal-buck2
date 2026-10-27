@@ -381,6 +381,10 @@ jobs:
           buck2 build //...
           buck2 log what-ran | tee what-ran.txt
           test "$(grep -c 'haskell_compile_module.*[[:space:]]worker[[:space:]]' what-ran.txt)" -gt 0
+          # The targets share a worker: the test binary's Main, which runs no
+          # Template Haskell, compiles in the one the library's modules
+          # started, rather than starting its own.
+          test "$(grep -c 'example-test-bin.*[[:space:]]worker_init[[:space:]]' what-ran.txt)" = 0
           buck2 test //...
           buck2 build -m opt //...
           buck2 test -m opt //...
@@ -425,6 +429,8 @@ jobs:
           buck2 log what-ran | tee what-ran.txt
           grep -q 'ghc-worker:ghc-worker.*haskell_link' what-ran.txt
           test "$(grep -c 'haskell_compile_module.*[[:space:]]worker[[:space:]]' what-ran.txt)" -gt 0
+          # The targets share this worker too.
+          test "$(grep -c 'example-test-bin.*[[:space:]]worker_init[[:space:]]' what-ran.txt)" = 0
           buck2 test //...
           printf '\n-- a third edit\n' >> Example/Lib.hs
           buck2 build //...
