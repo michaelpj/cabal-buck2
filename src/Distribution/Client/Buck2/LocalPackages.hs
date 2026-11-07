@@ -19,6 +19,7 @@ module Distribution.Client.Buck2.LocalPackages
   , localToolTargets
   , localBuildTools
   , wantedBuildTools
+  , packagesWithData
   , projectTestOptions
   ) where
 
@@ -319,14 +320,17 @@ data ToolTarget = ToolTarget
 
 -- | The targets of @alex@ and @happy@, when they are among the packages built
 -- from source: the rules that preprocess @.x@ and @.y@ files run those
--- instead of one in the cabal store.
+-- instead of one in the cabal store. And of @ghc-worker@, the persistent
+-- worker of the per-module compiles that comes with the rules
+-- (@buck2/tools/ghc-worker@), when the project builds it from source: the
+-- toolchain then uses it, built with the project's own GHC.
 localToolTargets :: FilePath -> [BuiltPackage] -> Map String ToolTarget
 localToolTargets projectRoot pkgs =
   Map.fromList
     [ (tool, ToolTarget{toolLabel = label pkg (nonLibraryTargetName "-exe" desc (PD.exeName exe)), toolData = dataFor (packageName desc : map depPkgName (PD.targetBuildDepends (PD.buildInfo exe)))})
     | pkg <- pkgs
     , let desc = bpDescription pkg
-    , tool <- ["alex", "happy"]
+    , tool <- ["alex", "happy", "ghc-worker"]
     , prettyShow (packageName desc) == tool
     , exe <- take 1 [e | e <- PD.executables desc, unUnqualComponentName (PD.exeName e) == tool]
     ]
@@ -373,6 +377,34 @@ wantedBuildTools pkgs =
     , comp <- PD.pkgBuildableComponents (bpDescription pkg)
     , ExeDependency pn exeName _ <- PD.buildToolDepends (componentBuildInfo comp)
     ]
+
+-- | For each package built from source, the packages with @data-files:@ among
+-- itself and what it depends on, directly or not. Those have to be told where
+-- their files are, whatever part of the package runs their code.
+--
+-- This goes by package rather than by component, so a library also gets the
+-- data files of what only its test-suite depends on: no harm, as they are only
+-- files.
+packagesWithData :: [BuiltPackage] -> Map String [String]
+packagesWithData pkgs =
+  Map.fromList
+    [ (prettyShow name, wanted)
+    | name <- Map.keys descriptions
+    , let wanted = [prettyShow dep | dep <- Set.toList (reachable Set.empty [name]), hasData dep]
+    , not (null wanted)
+    ]
+  where
+    descriptions = Map.fromList [(packageName (bpDescription pkg), bpDescription pkg) | pkg <- pkgs]
+    hasData name = maybe False (not . null . PD.dataFiles) (Map.lookup name descriptions)
+    reachable seen [] = seen
+    reachable seen (name : rest) = case Map.lookup name descriptions of
+      Just desc | not (Set.member name seen) -> reachable (Set.insert name seen) (dependencies desc ++ rest)
+      _ -> reachable seen rest
+    dependencies desc =
+      [ depPkgName dep
+      | comp <- PD.pkgBuildableComponents desc
+      , dep <- PD.targetBuildDepends (componentBuildInfo comp)
+      ]
 
 -- | The project's @test-options:@ for each test-suite that has any - only
 -- the elaborated package knows them (they aren't part of the @.cabal@ file

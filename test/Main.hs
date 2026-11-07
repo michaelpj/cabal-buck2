@@ -68,6 +68,7 @@ runUnitTest (name, test) = do
 tests :: [(String, Project -> IO ())]
 tests =
   [ ("basic", basic)
+  , ("per-module", perModule)
   , ("disabled-stanzas", disabledStanzas)
   , ("missing-module", missingModule)
   , ("cache-config", cacheConfig)
@@ -144,6 +145,7 @@ runTest exe (name, test) = do
       "cache-config" -> "basic"
       "buck2-version" -> "basic"
       "project-overrides" -> "basic"
+      "per-module" -> "basic"
       _ -> name
     setup dir = do
       cleanup dir
@@ -467,6 +469,8 @@ sourceDeps project = do
   -- Where it is, is in packages.bzl, with the packages of the project.
   packages <- readIn project ("cabal-buck2" </> "packages.bzl")
   assertContains "cabal-buck2/packages.bzl" "'dep': 'dist-newstyle/src/dep-1.0'," packages
+  -- It needs its data files, and so does what depends on it.
+  assertContains "cabal-buck2/packages.bzl" "DATA_PACKAGES = {\n    'app': [\n        'dep',\n    ],\n    'dep': [\n        'dep',\n    ],\n}" packages
   -- Its data files are recorded, for the tools that read them.
   assertContains depBzlPath "'data/*.txt'" depBzl
   -- hsc2hs is told what it is compiling for.
@@ -608,6 +612,18 @@ projectOverrides project = do
   assertContains "packages.bzl" "load(\"//:cabal-buck2.bzl\", _OVERRIDES = \"OVERRIDES\")" with
   assertContains "packages.bzl" "OVERRIDES = _OVERRIDES" with
 
+-- | @--per-module@ is recorded in every package's spec, for buck2/cabal.bzl
+-- to set on each of its targets.
+perModule :: Project -> IO ()
+perModule project = do
+  _ <- buck2 project []
+  without <- readIn project ("lib-pkg" </> "BUCK.cabal.bzl")
+  assertNotContains "BUCK.cabal.bzl" "'per_module'" without
+
+  _ <- buck2 project ["--per-module"]
+  with <- readIn project ("lib-pkg" </> "BUCK.cabal.bzl")
+  assertContains "BUCK.cabal.bzl" "'per_module': True," with
+
 -- | @--cache=ADDRESS@ adds the cache's settings to @.buckconfig@, which are
 -- kept by later runs without the flag, and @--no-cache@ removes.
 cacheConfig :: Project -> IO ()
@@ -693,7 +709,7 @@ missingModule project = do
 -- @ghcWithPackages@) are reached through a symlink for each directory.
 externalDirsTest :: IO ()
 externalDirsTest = do
-  let paths = RepoPaths{rpGhcVersion = "9.6.7", rpGlobalRootAbs = "/ghc/lib", rpStoreRootAbs = "/home/u/.cabal/store/ghc-9.6.7", rpStoreDbRel = "package.db", rpExternal = [], rpDllExtension = "so", rpPicByDefault = False}
+  let paths = RepoPaths{rpGhcVersion = "9.6.7", rpGlobalRootAbs = "/ghc/lib", rpStoreRootAbs = "/home/u/.cabal/store/ghc-9.6.7", rpStoreDbRel = "package.db", rpExternal = Map.empty, rpDllExtension = "so", rpPicByDefault = False}
       aeson = "/nix/store/aaa-aeson-lib-aeson-2.2.5.1/lib/x86_64-linux-ghc-9.6.7"
       text = "/nix/store/bbb-text-lib-text-2.1.4/lib/x86_64-linux-ghc-9.6.7"
       dirs =
@@ -713,7 +729,7 @@ externalDirsTest = do
   let names = map snd linked
   check "links are in external/" True (all (\n -> take 9 n == "external/") names)
   check "the links are different" 2 (length (nub names))
-  let paths' = paths{rpExternal = linked}
+  let paths' = paths{rpExternal = Map.fromList linked}
       aesonLink = fromMaybe (error "no link for aeson") (lookup aeson linked)
   check "a library in a linked directory" (Just (aesonLink ++ "/aeson-2.2.5.1-X/libHSaeson-2.2.5.1-X.a")) (toRepoRelative paths' (aeson ++ "/aeson-2.2.5.1-X/libHSaeson-2.2.5.1-X.a"))
   check "a library under GHC's libdir" (Just "ghc-9.6.7/x86_64-linux-ghc-9.6.7/base-4.18.3.0/libHSbase.a") (toRepoRelative paths' "/ghc/lib/x86_64-linux-ghc-9.6.7/base-4.18.3.0/libHSbase.a")

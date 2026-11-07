@@ -1,6 +1,8 @@
 module Main (main) where
 
-import Example.Lib (addPoints, hello, greet, greetFirst)
+import Example.Lib (addPoints, hello, greet, greetFirst, getDataFileContents, embeddedDataFile)
+import Example.Forest (Forest (..))
+import Example.Tree (Tree (..), size)
 import System.Exit (exitFailure, exitSuccess)
 
 main :: IO ()
@@ -8,8 +10,10 @@ main = do
   let greeting = greet "World"
       hello' = hello "User"
   total <- addPoints 3 4
+  dataContents <- getDataFileContents
   let firstOf = greetFirst ["Alice", "Bob"]
       firstOfEmpty = greetFirst []
+      treeSize = size (Node (Forest [Leaf, Node (Forest [Leaf])]))
       failures =
         [ msg
         | (ok, msg) <-
@@ -18,6 +22,9 @@ main = do
             , (firstOf == "Hello, Alice!", "greetFirst: got " ++ show firstOf)
             , (firstOfEmpty == "Hello, stranger!", "greetFirst (empty): got " ++ show firstOfEmpty)
             , (hello' == "Hello, User!", "hello: got " ++ show hello')
+            , (treeSize == 4, "size: got " ++ show treeSize)
+            , (dataContents == "Hello\n", "dataContents: got " ++ dataContents)
+            , (embeddedDataFile == "Hello\n", "embeddedDataFile: got " ++ embeddedDataFile)
             ]
         , not ok
         ]

@@ -27,7 +27,7 @@ import Distribution.Types.PackageName (PackageName)
 import Distribution.Simple.Utils (die', notice, warn)
 
 import Distribution.Client.Buck2.Generate
-import Distribution.Client.Buck2.LocalPackages (BuiltPackage (..), rootRelativeDir)
+import Distribution.Client.Buck2.LocalPackages (BuiltPackage (..), packagesWithData, rootRelativeDir)
 import Distribution.Client.Buck2.Spec
 import Distribution.Client.Buck2.Starlark
 import Distribution.Client.Buck2.Version (cabalBuck2Version)
@@ -49,8 +49,8 @@ import Distribution.Client.Buck2.Version (cabalBuck2Version)
 --   * @cabal-buck2\/autogen\/BUCK@ (see 'writeAutogenBuck') has
 --     @export_file()@ rules for the autogen files, so they can be
 --     easily referenced from anywhere else.
-writeAllPackages :: Verbosity -> FilePath -> Map (PackageName, ComponentName) LocalBuildInfo -> Set String -> Map (PackageName, ComponentName) [PathTemplate] -> [BuiltPackage] -> Bool -> IO ()
-writeAllPackages verbosity projectRoot componentLBIs externalBuildTools projectTestOptions pkgs keepGoing = do
+writeAllPackages :: Verbosity -> FilePath -> Map (PackageName, ComponentName) LocalBuildInfo -> Set String -> Map (PackageName, ComponentName) [PathTemplate] -> [BuiltPackage] -> Bool -> Bool -> IO ()
+writeAllPackages verbosity projectRoot componentLBIs externalBuildTools projectTestOptions pkgs keepGoing perModule = do
   sources <- traverse (\pkg -> Set.fromList <$> filterM (doesFileExist . (bpDir pkg </>)) (sourceCandidates (bpDescription pkg))) pkgs
   let generateAll skipped = [generate skipped pkg srcs | (pkg, srcs) <- zip pkgs sources]
       -- A library without a rule makes the components that depend on it
@@ -75,7 +75,7 @@ writeAllPackages verbosity projectRoot componentLBIs externalBuildTools projectT
   traverse_ (writeOnePackage verbosity projectRoot) results
   where
     generate skipped pkg srcs =
-      generatePackageTargets localIndex projectRoot componentLBIs externalBuildTools projectTestOptions srcs skipped (bpInProject pkg) (bpCustomSetup pkg) (bpDescription pkg)
+      generatePackageTargets localIndex projectRoot componentLBIs externalBuildTools projectTestOptions srcs skipped (bpInProject pkg) (bpCustomSetup pkg) perModule (bpDescription pkg)
 
     librariesWithoutRule pkg (targets, _) =
       [ (packageName desc, libName lib)
@@ -97,7 +97,8 @@ writeAllPackages verbosity projectRoot componentLBIs externalBuildTools projectT
 -- each package is, as its directory relative to the project root. @buck2\/cabal.bzl@
 -- loads it to find the targets of the packages that a package depends on, and
 -- the paths of its own directory. Nothing in a package's @BUCK.cabal.bzl@ is
--- relative to the project, so only this file changes when a package moves.
+-- relative to the project, so only this file changes when a package moves. It
+-- says too which packages' data files each package needs ('packagesWithData').
 --
 -- It also passes on the project's own customisation of the generated
 -- targets: the @OVERRIDES@ of a @cabal-buck2.bzl@ in the project root, if
@@ -117,14 +118,16 @@ writePackagesFile verbosity projectRoot pkgs = do
           , "# adding or removing cabal-buck2.bzl."
           , "#"
           , "# The directory of each package that this project builds, from the root of"
-          , "# the project, and the project's overrides of the generated targets. See"
-          , "# buck2/cabal.bzl."
+          , "# the project, the packages whose data files each one needs, and the"
+          , "# project's overrides of the generated targets. See buck2/cabal.bzl."
           , ""
           ]
             ++ ["load(\"//:cabal-buck2.bzl\", _OVERRIDES = \"OVERRIDES\")" | hasOverrides]
             ++ ["", "OVERRIDES = " ++ (if hasOverrides then "_OVERRIDES" else "{}"), ""]
         )
         ++ renderBinding "PACKAGES" (VDict (Map.toList packages))
+        ++ "\n"
+        ++ renderBinding "DATA_PACKAGES" (VDict (Map.toList (strList <$> packagesWithData pkgs)))
     packages =
       Map.fromList
         [ (prettyShow (packageName (bpDescription pkg)), str (rootRelativeDir projectRoot (bpDir pkg)))
@@ -211,6 +214,7 @@ specValue spec =
     , ("package", VDict [("name", str (specPackageName spec)), ("version", str (specPackageVersion spec))])
     ]
       ++ listField "ghc_options" (specGhcOptions spec)
+      ++ [("per_module", VBool True) | specPerModule spec]
       ++ [ ("data", VDict [("dir", str (specDataDir spec)), ("files", strList (specDataFiles spec))])
          | not (null (specDataFiles spec))
          ]

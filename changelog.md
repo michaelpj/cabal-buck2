@@ -9,12 +9,21 @@
   * The path to GHC, its tools and the C/C++ compilers are now fixed
     when you run `cabal buck2` rather than being found via `PATH`
     (see https://github.com/simonmar/haskell-buck2/issues/29)
+  * `--per-module` (experimental) compiles each module in a buck2 action of its own
+    rather than each component with one `ghc --make`, with early
+    cut-off by ABI hash within and across packages. See the README for
+    what it costs.
   * An executable with `enable_profiling = True` now links its libraries'
     profiled archives whatever the build mode, rather than their
     non-profiled shared libraries in a dev build
     (see https://github.com/simonmar/haskell-buck2/issues/30)
   * The mode flags (-O etc.) now come before the package-specific
     flags (from `ghc-options` etc.) on the GHC command line.
+  * A package's `data-files` are now found by `getDataFileName` when
+    its code runs in the buck2 build. This includes the data files of
+    the packages it depends on that buck2 builds. Haskell rules have a
+    `data_dirs` attribute for this, and `cabal-buck2/packages.bzl` has
+    `DATA_PACKAGES`.
 
 # 0.5.0.0
 
